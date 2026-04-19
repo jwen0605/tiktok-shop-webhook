@@ -48,6 +48,19 @@ async def receive_webhook(
 
     if event_type == "order.created":
         order_id = data["order_id"]
+
+        # Idempotency check — ignore duplicate webhook deliveries
+        if order_id in orders:
+            print(f"  DUPLICATE ignored: {order_id} already exists")
+            return {"status": "ok"}
+
+        # Oversell check — verify stock before accepting the order
+        for item in data["items"]:
+            sku, qty = item["sku"], item["quantity"]
+            if sku in products and products[sku]["stock"] < qty:
+                print(f"  OVERSELL BLOCKED: {sku} has {products[sku]['stock']} units, requested {qty}")
+                return {"status": "rejected", "reason": f"insufficient stock for {sku}"}
+
         orders[order_id] = {
             "order_id":   order_id,
             "status":     "pending",
@@ -61,9 +74,13 @@ async def receive_webhook(
     elif event_type == "order.paid":
         order_id = data["order_id"]
         if order_id in orders:
+            # Idempotency check — don't deduct stock twice if payment event fires twice
+            if orders[order_id]["status"] == "paid":
+                print(f"  DUPLICATE ignored: {order_id} already paid")
+                return {"status": "ok"}
+
             orders[order_id]["status"] = "paid"
             print(f"  Payment confirmed for {order_id}")
-            # Deduct inventory for each line item
             for item in orders[order_id]["items"]:
                 sku, qty = item["sku"], item["quantity"]
                 if sku in products:
