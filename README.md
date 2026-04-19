@@ -39,8 +39,6 @@ Instead of your server polling every few seconds, TikTok Shop pushes data to you
 | Hardcoded secret key | App secret from TikTok Shop developer credentials |
 | In-memory `orders = {}` | Real database (PostgreSQL, DynamoDB, etc.) |
 
-To connect to the real TikTok Shop API you would need a TikTok Shop developer account, real API credentials, and a public URL for TikTok to POST webhooks to.
-
 ---
 
 ## The Full Order Journey
@@ -51,12 +49,12 @@ To connect to the real TikTok Shop API you would need a TikTok Shop developer ac
 send_event("order.created", {
     "order_id": "ORD-001",
     "customer": {"name": "Alice Chen"},
-    "items": [...],
-    "total": 49.97,
+    "items": [{"sku": "SKU001", "quantity": 1, "price": 29.99}],
+    "total": 29.99,
 })
 ```
 
-In production, this fires inside TikTok Shop's servers when a customer clicks Buy. The simulator replays that same behavior locally.
+In production, this fires inside TikTok Shop's servers when a customer clicks Buy.
 
 ### Step 2 — Simulator signs and POSTs it
 
@@ -70,35 +68,31 @@ httpx.post("http://localhost:8000/webhook",
 )
 ```
 
-A plain HTTP POST request — the same mechanism TikTok Shop uses to deliver events to merchant servers worldwide.
+A plain HTTP POST — the same mechanism TikTok Shop uses to deliver events to merchant servers.
 
-### Step 3 — main.py receives the event
-
-FastAPI is always listening. When the POST arrives:
+### Step 3 — main.py receives and processes the event
 
 ```python
 @app.post("/webhook")
 async def receive_webhook(request, x_tiktok_signature):
-    payload    = await request.body()   # read raw bytes
-    event      = json.loads(payload)    # bytes → dict
-    event_type = event["type"]          # e.g. "order.created"
-    data       = event["data"]          # order details
+    payload    = await request.body()
+    event      = json.loads(payload)
+    event_type = event["type"]   # e.g. "order.created"
+    data       = event["data"]   # order details
 ```
 
 ### Step 4 — Data is stored
 
 ```python
-orders = {}  # in-memory store at the top of main.py
+orders = {}  # in-memory store (would be a real DB in production)
 
 orders["ORD-001"] = {
     "order_id": "ORD-001",
     "status":   "pending",
     "items":    [...],
-    "total":    49.97,
+    "total":    29.99,
 }
 ```
-
-`orders` lives in RAM — restarting the server clears it. In production this would be a real database.
 
 ---
 
@@ -134,7 +128,7 @@ Anyone on the internet can POST to your `/webhook` URL. The signature proves the
 
 **How it works:**
 1. TikTok Shop and your server share a secret key
-2. TikTok Shop signs the payload: `HMAC-SHA256(secret, payload)`
+2. TikTok Shop signs the payload using `HMAC-SHA256(secret, payload)`
 3. Your server recomputes the same signature and compares
 4. If they don't match → reject with `401 Unauthorized`
 
@@ -159,11 +153,36 @@ order.created  →  order.cancelled
 Each event carries a JSON `data` blob. The server reacts differently per `event_type`:
 
 ```python
-if event_type == "order.created":     # store new order, status = pending
+if event_type == "order.created":     # check stock, store order, status = pending
 elif event_type == "order.paid":      # status = paid, deduct inventory
 elif event_type == "order.cancelled": # status = cancelled
 elif event_type == "inventory.low":   # log stock alert
 ```
+
+---
+
+## Protections
+
+### Oversell Protection
+
+Prevents accepting an order when there isn't enough stock. Checked at `order.created` before the order is stored.
+
+```
+Customer requests 999x SKU001 (only 100 in stock)
+→ OVERSELL BLOCKED: SKU001 has 100 units, requested 999
+→ Order rejected
+```
+
+### Idempotency (Duplicate Order Prevention)
+
+TikTok Shop may retry a webhook delivery if your server doesn't respond in time. Without this check, the same order could be processed twice — charging inventory twice, shipping twice.
+
+```
+ORD-001 received → processed normally
+ORD-001 received again → DUPLICATE ignored: ORD-001 already exists
+```
+
+The same protection applies to `order.paid` — inventory is only deducted once even if the payment event fires twice.
 
 ---
 
@@ -198,3 +217,8 @@ python main.py
 # Terminal 2 — simulate TikTok Shop sending events
 python simulator.py
 ```
+
+The simulator runs three demos in sequence:
+1. **Normal flow** — order created, paid, fulfilled, and one cancellation
+2. **Duplicate order** — same order sent twice, second one ignored
+3. **Oversell** — order requesting more stock than available is blocked

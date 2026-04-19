@@ -37,12 +37,13 @@ def query(method: str, path: str, label: str):
     print(json.dumps(r.json(), indent=2))
 
 
-def run_demo():
-    print("=" * 50)
-    print("  TikTok Shop Integration Demo")
+def demo_normal_flow():
+    """Standard order lifecycle: created → paid → fulfilled, plus a cancellation."""
+    print("\n" + "=" * 50)
+    print("  DEMO 1: Normal Order Flow")
     print("=" * 50)
 
-    # 1. Customer places an order
+    # Customer places an order
     send_event("order.created", {
         "order_id": "ORD-001",
         "customer": {"name": "Alice Chen", "email": "alice@example.com"},
@@ -55,11 +56,11 @@ def run_demo():
     })
     time.sleep(1)
 
-    # 2. Payment goes through
+    # Payment confirmed — inventory deducted automatically
     send_event("order.paid", {"order_id": "ORD-001"})
     time.sleep(1)
 
-    # 3. Second order placed but then cancelled
+    # Second order placed then cancelled
     send_event("order.created", {
         "order_id": "ORD-002",
         "customer": {"name": "Bob Kim", "email": "bob@example.com"},
@@ -72,20 +73,59 @@ def run_demo():
     send_event("order.cancelled", {"order_id": "ORD-002"})
     time.sleep(1)
 
-    # 4. Platform fires a low-stock alert
+    # Platform fires a low-stock alert
     send_event("inventory.low", {"sku": "SKU001", "stock": 5})
     time.sleep(1)
 
-    # 5. Now call the REST API to inspect state and fulfill the paid order
     print("\n" + "=" * 50)
     print("  Querying REST API")
     print("=" * 50)
 
-    query("GET",  "/orders",              "all orders")
-    query("GET",  "/orders/ORD-001",      "single order")
+    query("GET",  "/orders",                 "all orders")
+    query("GET",  "/orders/ORD-001",         "single order")
     query("POST", "/orders/ORD-001/fulfill", "fulfill paid order")
-    query("GET",  "/products/SKU001",     "check SKU001 stock after sales")
+    query("GET",  "/products/SKU001",        "check SKU001 stock after sales")
+
+
+def demo_duplicate_order():
+    """Idempotency test — same order sent twice, only processed once."""
+    print("\n" + "=" * 50)
+    print("  DEMO 2: Duplicate Order (Idempotency)")
+    print("=" * 50)
+
+    order = {
+        "order_id": "ORD-003",
+        "customer": {"name": "Carol Wu", "email": "carol@example.com"},
+        "items": [{"sku": "SKU002", "name": "Phone Case", "quantity": 1, "price": 9.99}],
+        "total": 9.99,
+        "created_at": int(time.time()),
+    }
+
+    print("Sending ORD-003 first time:")
+    send_event("order.created", order)
+    time.sleep(1)
+
+    print("Sending ORD-003 again (simulates TikTok Shop retry):")
+    send_event("order.created", order)
+
+
+def demo_oversell():
+    """Oversell protection — order requesting more stock than available is blocked."""
+    print("\n" + "=" * 50)
+    print("  DEMO 3: Oversell Protection")
+    print("=" * 50)
+
+    print("Requesting 999 units of SKU001 (only 100 in stock):")
+    send_event("order.created", {
+        "order_id": "ORD-004",
+        "customer": {"name": "Dan Lee", "email": "dan@example.com"},
+        "items": [{"sku": "SKU001", "name": "Wireless Earbuds", "quantity": 999, "price": 29.99}],
+        "total": 29990.01,
+        "created_at": int(time.time()),
+    })
 
 
 if __name__ == "__main__":
-    run_demo()
+    demo_normal_flow()
+    demo_duplicate_order()
+    demo_oversell()
